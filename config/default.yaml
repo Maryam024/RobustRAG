@@ -1,0 +1,36 @@
+data:
+  squad_path: "data/dev-v1.1.json"      
+                                           
+  num_passages: 2500                  
+                                  
+  seed: 42
+
+embedding:
+  model_name: "BAAI/bge-small-en-v1.5"
+  batch_size: 64
+  device: "cpu"   # set to "cuda" if available
+
+index:
+  metric: "ip"   
+
+retrieval:
+  top_k: 5
+
+attacks:
+  poisoning:
+    rate: 0.05         
+    strategy: "near_duplicate" 
+  noise:
+    level: 0.1          
+
+defense:
+  method: "near_duplicate_suppression"
+  candidate_pool_size: 20     
+  similarity_threshold: 0.97    
+
+evaluation:
+  metrics: ["recall_at_k", "precision_at_k", "mrr", "exact_match", "bleu", "rouge_l"]
+  reader_model: "distilbert-base-cased-distilled-squad"
+
+output:
+  results_dir: "results"

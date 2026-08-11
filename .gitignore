@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# large downloaded dataset, not committed — see data/README.md
+data/*.json
+!data/sample_squad_tiny.json
+
+results/logs/*
+!results/logs/.gitkeep
+results/results_summary.csv
