@@ -1,191 +1,434 @@
 # RobustRAG: Evaluating Retrieval Robustness Against Corpus Poisoning
 
-A small evaluation framework for studying how corpus poisoning and query-side
-noise affect retrieval quality and downstream answer quality in a
-Retrieval-Augmented Generation (RAG) pipeline, and how much of that
-degradation a lightweight defense can recover.
+A research-oriented evaluation framework for studying the robustness of Retrieval-Augmented Generation (RAG) pipelines under **corpus poisoning** and **query-side retrieval noise**.
 
-This is a research-oriented evaluation project, not a novel method. The goal
-is to demonstrate a clean, reproducible experimental setup for studying RAG
-robustness, not to propose a new algorithm.
+RobustRAG evaluates how different perturbations affect both **retrieval quality** and **downstream answer quality**, and investigates whether a lightweight embedding-based defense can mitigate degradation caused by poisoning.
+
+> **Research scope:** RobustRAG is an evaluation study rather than a novel retrieval or defense algorithm. The goal is to provide a controlled, reproducible framework for measuring RAG robustness and identifying failure modes under different perturbation conditions.
+
+---
+
+## Research Questions
+
+This project investigates three main questions:
+
+1. **How sensitive is RAG retrieval to different forms of corpus poisoning?**
+2. **How severely does query-side embedding noise affect retrieval and answer quality?**
+3. **Can a lightweight near-duplicate suppression strategy recover performance after corpus poisoning?**
+
+The experiments isolate corpus-level and query-level perturbations so that their effects can be analyzed independently.
+
+---
 
 ## Motivation
 
-RAG systems are only as trustworthy as the corpus they retrieve from. If an
-attacker can insert documents into that corpus — near-duplicates of real
-content, subtly false variants of real facts, or noisy irrelevant text — the
-retriever may surface poisoned content just as readily as genuine content,
-and a downstream reader has no way to tell the difference. Separately, the
-query side can also degrade: a noisy encoder, a corrupted embedding, or an
-imperfect query rewrite can push a legitimate question away from its correct
-answer even with a perfectly clean corpus.
+RAG systems depend heavily on the quality of the retrieval corpus. If an attacker can inject additional documents into the corpus, retrieved results may become less reliable even when the original evidence remains available.
 
-This project isolates and measures both failure modes, and tests whether a
-simple, explainable defense can recover some of the lost accuracy.
+This study evaluates three corpus-poisoning scenarios:
+
+* **Near-duplicate content** that competes with genuine passages
+* **Contradictory content** that preserves the original topic while introducing an incorrect answer
+* **Irrelevant but vocabulary-overlapping content** that introduces noisy retrieval candidates
+
+The project also studies a separate failure mode: **query-side embedding noise**. In this setting, the corpus remains unchanged while Gaussian perturbations are applied directly to query embeddings.
+
+This separation allows the experiments to distinguish between robustness to **corpus contamination** and robustness to **query representation degradation**.
+
+---
 
 ## Project Overview
 
-The pipeline:
+The evaluation pipeline consists of:
 
-1. Load a subset of SQuAD and pool its paragraphs into a retrieval corpus
-2. Embed the corpus with a sentence embedding model and index it with FAISS
-3. Measure baseline retrieval and answer quality
-4. Inject poisoned documents into the corpus (three strategies) and re-measure
-5. Perturb query embeddings with gaussian noise and re-measure, independently
-   of poisoning
-6. Apply a lightweight near-duplicate suppression defense on the poisoned
-   index and measure how much of the degradation is recovered
+1. Load a SQuAD-derived retrieval corpus
+2. Encode passages using a sentence-embedding model
+3. Build a FAISS retrieval index
+4. Establish clean-corpus baseline performance
+5. Inject corpus-poisoning documents using three attack strategies
+6. Measure retrieval and downstream answer-quality changes
+7. Independently perturb query embeddings with Gaussian noise
+8. Apply a lightweight near-duplicate suppression defense to poisoned retrieval results
+9. Compare clean, attacked, and defended conditions
+10. Generate summary metrics and research figures
 
-Every stage is driven by `run.py` and a single YAML config, so any experiment
-can be reproduced with one command.
+All experiments are controlled through `run.py` and a YAML configuration file.
+
+---
 
 ## Repository Structure
 
-```
+```text
 RobustRAG/
-├── run.py                     # single entry point (baseline/poisoning/noise/defense/report)
-├── config/default.yaml        # all experiment parameters
-├── data/                       # SQuAD json goes here (not committed, see data/README.md)
+├── run.py
+├── config/
+│   └── default.yaml
+├── data/
+│   └── README.md
 ├── results/
-│   ├── logs/                  # per-experiment JSON metric dumps
-│   └── figures/                # generated figures
+│   ├── logs/
+│   └── figures/
 ├── src/
-│   ├── data/loader.py          # SQuAD parsing + corpus subsampling
-│   ├── retrieval/               # embeddings, FAISS index, retriever
-│   ├── attacks/                # corpus poisoning + query noise
-│   ├── defense/                # near-duplicate suppression
-│   └── evaluation/             # metrics, reader, evaluator, plots
-└── tests/                      # sanity tests for the non-ML-dependent logic
+│   ├── data/
+│   │   └── loader.py
+│   ├── retrieval/
+│   ├── attacks/
+│   ├── defense/
+│   └── evaluation/
+└── tests/
 ```
+
+### Main Components
+
+| Component     | Purpose                                            |
+| ------------- | -------------------------------------------------- |
+| `data/`       | Dataset loading and corpus construction            |
+| `retrieval/`  | Sentence embeddings, FAISS indexing, and retrieval |
+| `attacks/`    | Corpus poisoning and query-noise generation        |
+| `defense/`    | Near-duplicate suppression                         |
+| `evaluation/` | Retrieval metrics, extractive QA, and reporting    |
+| `run.py`      | Unified experiment entry point                     |
+
+---
 
 ## Methodology
 
-**Embedding model.** Retrieval uses `BAAI/bge-small-en-v1.5` via
-`sentence-transformers`, not CLIP. CLIP's text encoder is trained for
-image-text alignment, not text-text semantic similarity, and is not a strong
-fit for pure-text retrieval. BGE is a small, CPU-friendly model trained
-specifically for this task.
+### Embedding Model
 
-**Corpus.** A subset of SQuAD's paragraphs (default: 2,500), deduplicated and
-pooled into a single retrieval corpus. Each answerable question is treated as
-a query with a known gold passage, which makes Recall@k, Precision@k, and MRR
-directly computable without extra annotation.
+Retrieval uses:
 
-**Poisoning strategies**, all derived from real corpus content and appended
-to the corpus (originals are never removed, so degradation can be attributed
-specifically to the injected documents):
-- **near-duplicate** — verbatim copies of real passages
-- **contradictory** — a real passage with its true answer substituted for a
-  wrong one, so the poisoned document is topically identical to a real
-  passage but asserts a false fact
-- **irrelevant** — a word-shuffled version of a real passage: similar
-  vocabulary, no coherent meaning
+`BAAI/bge-small-en-v1.5`
 
-**Retrieval noise** is gaussian perturbation applied directly to query
-embeddings (then renormalized), kept independent of corpus poisoning so the
-two failure modes can be measured separately before being combined.
+through `sentence-transformers`.
 
-**Defense.** A plain similarity threshold on retrieval scores would not catch
-near-duplicate or contradictory poisoning, since both are constructed to
-score just as high as the real passage they were derived from. Instead, the
-defense retrieves a larger candidate pool and greedily keeps the
-highest-scoring candidates while skipping any whose embedding is
-near-identical (cosine similarity ≥ 0.97 by default) to one already kept,
-backfilling from the pool until `k` results remain.
+The model was selected as a lightweight sentence-embedding model suitable for semantic text retrieval and CPU-based experimentation.
 
-**Answer quality.** A small extractive QA model
-(`distilbert-base-cased-distilled-squad`) extracts an answer span from the
-top-retrieved passage. This is deliberately extractive rather than
-generative — it isolates retrieval's effect on the answer without adding an
-LLM's own error modes into the picture.
+### Corpus
 
-## Experimental Setup
+The retrieval corpus is constructed from SQuAD paragraphs.
 
-All parameters live in `config/default.yaml`. Defaults: 2,500-passage corpus,
-top-5 retrieval, 5% poisoning rate, noise level 0.1, similarity threshold
-0.97 for the defense.
+Each answerable question provides:
+
+* a query
+* a gold passage
+* an expected answer
+
+This enables direct evaluation of retrieval using Recall@K, Precision@K, and MRR, while the downstream extractive reader provides answer-quality metrics.
+
+### Corpus Poisoning
+
+Three poisoning strategies are evaluated.
+
+#### 1. Near-Duplicate
+
+Real corpus passages are duplicated and injected into the corpus.
+
+The original passage remains available, allowing the experiment to measure the effect of additional competing documents.
+
+#### 2. Contradictory
+
+A real passage is modified so that its original answer is replaced with an incorrect answer while retaining the surrounding topical context.
+
+This creates a semantically similar passage containing conflicting information.
+
+#### 3. Irrelevant
+
+A real passage is transformed through word shuffling to preserve some vocabulary overlap while substantially reducing its coherent semantic content.
+
+---
+
+## Query-Side Noise
+
+Query noise is evaluated independently from corpus poisoning.
+
+Gaussian perturbations are applied directly to the query embeddings and the resulting vectors are renormalized before retrieval.
+
+This experiment asks a separate robustness question:
+
+> How much does RAG performance deteriorate when the query representation itself becomes noisy?
+
+---
+
+## Defense
+
+The evaluated defense is a lightweight **near-duplicate suppression mechanism**.
+
+It retrieves an expanded candidate pool and greedily removes candidates whose embeddings are sufficiently similar to candidates already selected.
+
+The default cosine-similarity threshold is:
+
+```text
+0.97
+```
+
+The defense is intentionally simple and interpretable. It is evaluated as a baseline mitigation strategy rather than presented as a novel defense algorithm.
+
+---
+
+# Experimental Results
+
+The current experiments reveal substantially different robustness behavior across perturbation types.
+
+### Clean Baseline
+
+The clean retrieval condition achieves:
+
+| Metric             |      Clean |
+| ------------------ | ---------: |
+| Recall@K           | **0.8871** |
+| Precision@K        | **0.1774** |
+| MRR                | **0.7634** |
+| Retrieval Accuracy | **0.8871** |
+| Exact Match        | **0.5592** |
+| BLEU               | **0.2588** |
+| ROUGE-L            | **0.6305** |
+
+---
+
+## Corpus Poisoning
+
+The current poisoning experiments produce relatively small changes compared with the query-noise experiment.
+
+| Condition      | Recall@K |    MRR | Exact Match |
+| -------------- | -------: | -----: | ----------: |
+| Clean          |   0.8871 | 0.7634 |      0.5592 |
+| Near-Duplicate |   0.8836 | 0.7440 |      0.5592 |
+| Contradictory  |   0.8830 | 0.7546 |      0.5579 |
+| Irrelevant     |   0.8862 | 0.7614 |      0.5570 |
+
+The current results indicate that the evaluated poisoning rate causes **modest aggregate degradation** in this experimental configuration.
+
+Near-duplicate poisoning produces the largest MRR decrease among the three evaluated poisoning strategies, while irrelevant poisoning has the smallest effect on retrieval metrics.
+
+These results should be interpreted as preliminary rather than as evidence that the evaluated poisoning strategies are universally ineffective. Statistical testing and experiments across multiple poisoning rates are needed to determine the robustness and significance of these effects.
+
+---
+
+## Query Noise
+
+The query-noise experiment produces a substantially larger degradation.
+
+| Metric      |  Clean |  Noisy | Relative Change |
+| ----------- | -----: | -----: | --------------: |
+| Recall@K    | 0.8871 | 0.6030 |      **−32.0%** |
+| MRR         | 0.7634 | 0.4432 |      **−41.9%** |
+| Exact Match | 0.5592 | 0.2898 |      **−48.2%** |
+| BLEU        | 0.2588 | 0.1358 |      **−47.5%** |
+| ROUGE-L     | 0.6305 | 0.3423 |      **−45.7%** |
+
+The degradation is consistent across retrieval and answer-quality metrics.
+
+This suggests that, under the current experimental configuration, **query representation noise is substantially more damaging than the evaluated corpus-poisoning conditions**.
+
+---
+
+## Defense Evaluation
+
+The current defense experiment does **not** demonstrate recovery of downstream answer quality.
+
+For the contradictory poisoning condition:
+
+| Metric      |  Clean | Poisoned | Defended |
+| ----------- | -----: | -------: | -------: |
+| Recall@K    | 0.8871 |   0.8831 |   0.8728 |
+| MRR         | 0.7634 |   0.7549 |   0.7504 |
+| Exact Match | 0.5592 |   0.5582 |   0.5582 |
+| BLEU        | 0.2588 |   0.2581 |   0.2581 |
+| ROUGE-L     | 0.6305 |   0.6289 |   0.6289 |
+
+In this experiment, the defense does not improve Exact Match, BLEU, or ROUGE-L relative to the poisoned condition.
+
+Recall@K and MRR also decrease after defense.
+
+Therefore, the current implementation should be interpreted as a **negative defense result / limitation**, rather than as evidence of successful mitigation.
+
+This result motivates further investigation into the interaction between candidate suppression, ranking, and downstream top-1 answer extraction.
+
+---
+
+# Research Findings
+
+The current experiments support three preliminary observations:
+
+### 1. Query noise causes substantial degradation
+
+Gaussian perturbation of query embeddings produces large and consistent drops in both retrieval and answer-quality metrics.
+
+The largest observed effects occur in Exact Match, BLEU, and ROUGE-L, all of which decrease by approximately 45–48%.
+
+### 2. The evaluated poisoning attacks have smaller aggregate effects
+
+At the current poisoning rate, near-duplicate, contradictory, and irrelevant attacks produce relatively modest changes in aggregate retrieval metrics.
+
+This does not establish that corpus poisoning is harmless; rather, it indicates that **attack intensity and attack construction require further systematic evaluation**.
+
+### 3. The lightweight defense does not currently recover performance
+
+The evaluated defense fails to improve downstream answer metrics in the current contradictory-poisoning experiment and slightly reduces retrieval metrics.
+
+This provides a concrete failure case for the defense and motivates investigation into stronger mitigation strategies.
+
+---
+
+# Experimental Reproducibility
+
+All experiment parameters are defined in:
+
+```text
+config/default.yaml
+```
+
+Default settings include:
+
+* Corpus size: 2,500 passages
+* Retrieval depth: top-5
+* Poisoning rate: 5%
+* Query noise level: 0.1
+* Defense similarity threshold: 0.97
+* Random seed: 42
+
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
-
-# download SQuAD (train or dev) from https://rajpurkar.github.io/SQuAD-explorer/
-# and place it at the path in config/default.yaml (data.squad_path)
-
-python run.py --experiment baseline
-python run.py --experiment poisoning --strategy near_duplicate
-python run.py --experiment poisoning --strategy contradictory
-python run.py --experiment poisoning --strategy irrelevant
-python run.py --experiment noise
-python run.py --experiment defense --strategy near_duplicate
-python run.py --experiment report   # renders figures from whatever logs exist
 ```
 
-Add `--skip-answers` to any experiment to skip the extractive-reader step and
-get faster retrieval-only numbers while iterating.
+Download the SQuAD dataset and configure its path in:
 
-Every run is seeded (`data.seed` in the config) for reproducibility — the
-corpus subsample, poisoning injection, and noise perturbation are all
-deterministic given the same seed.
+```text
+config/default.yaml
+```
 
-## Results
+Run the experiments:
 
-Results are not committed to this repository, since they depend on which
-SQuAD subset is downloaded and are regenerated by running the commands above.
-After running the full sweep, `python run.py --experiment report` produces:
+```bash
+python run.py --experiment baseline
 
-- `retrieval_accuracy.png` / `answer_accuracy.png` — baseline performance
-- `poisoning_impact.png` — Recall@k under each poisoning strategy vs. clean
-- `defense_recovery_<strategy>.png` — clean vs. poisoned vs. defended Recall@k
-- `results_summary.csv` — every condition's full metric set in one tidy table
+python run.py --experiment poisoning --strategy near_duplicate
 
-Expected qualitative pattern, based on how each strategy is constructed:
-near-duplicate and contradictory poisoning should degrade retrieval the most,
-since both are built as embedding-close copies of real passages that
-compete directly with the genuine document. The irrelevant strategy should
-degrade retrieval less, since shuffled text sits further from the query in
-embedding space. The defense specifically targets embedding-near-duplicate
-content, so it should recover a meaningful fraction of the near-duplicate and
-contradictory degradation, but is not expected to help much against the
-irrelevant strategy, which isn't a near-duplicate attack in the first place.
+python run.py --experiment poisoning --strategy contradictory
 
-## Limitations
+python run.py --experiment poisoning --strategy irrelevant
 
-- Evaluation uses SQuAD's dev/validation split (`dev-v1.1.json`), not train. This
-  matters specifically because the extractive reader
-  (`distilbert-base-cased-distilled-squad`) was fine-tuned on SQuAD's training
-  split — evaluating it on train data would let it potentially answer from
-  memorized question-answer pairs rather than from the retrieved context,
-  which would undermine the retrieval-to-answer causal story this project is
-  built around. The retriever (BGE) has no such leakage concern, since it was
-  never fine-tuned on SQuAD specifically.
-- Poisoning strategies are heuristic constructions, not adversarially
-  optimized attacks against the retriever (e.g. no gradient-based embedding
-  attacks).
-- The contradictory strategy falls back to plain duplication when the true
-  answer string doesn't appear verbatim in its source passage; the effective
-  contradiction rate should be checked against the fallback rate on the real
-  dataset.
-- Recall@k, Precision@k, and MRR assume exactly one relevant passage per
-  query, which holds for this SQuAD-derived setup but doesn't generalize
-  directly to multi-relevant-passage retrieval settings.
-- The reader only sees the top-1 retrieved passage, not a multi-passage
-  context, so answer quality is tightly coupled to top-1 retrieval quality by
-  construction.
-- The defense targets embedding-near-duplicate content specifically; it is
-  not designed to catch the irrelevant (word-shuffled) attack, and its
-  effectiveness against contradictory poisoning depends on how close the
-  swapped-fact embedding remains to the original.
-- Evaluated at a single default poisoning rate and noise level; a full
-  robustness curve across rates would need multiple sweep runs (straightforward
-  via the config, but not automated into one script).
+python run.py --experiment noise
 
-## Future Work
+python run.py --experiment defense --strategy contradictory
 
-- Sweep poisoning rate and noise level across a range of values to plot full
-  degradation/recovery curves rather than single points
-- Compare a cross-encoder re-ranker as a second, stronger defense baseline
-- Test on a second dataset (e.g. Natural Questions) to check whether the
-  poisoning/defense results generalize beyond SQuAD's structure
-- Replace the extractive reader with a generative one and add human or
-  LLM-judged answer quality evaluation, in addition to EM/BLEU/ROUGE-L
-- Compare defense robustness across multiple embedding models
+python run.py --experiment report
+```
+
+Use `--skip-answers` to evaluate retrieval without running the extractive reader.
+
+The random seed controls the corpus subsampling, poisoning generation, and noise generation. Exact reproducibility may additionally depend on underlying numerical-library and hardware behavior.
+
+---
+
+# Evaluation Metrics
+
+### Retrieval
+
+**Recall@K**
+Measures whether the gold passage appears within the top-K retrieved results.
+
+**Precision@K**
+Measures the proportion of retrieved passages that are relevant.
+
+**MRR**
+Measures how highly the first relevant passage is ranked.
+
+### Answer Quality
+
+The current pipeline uses:
+
+* Exact Match
+* BLEU
+* ROUGE-L
+
+A lightweight extractive QA reader,
+
+```text
+distilbert-base-cased-distilled-squad
+```
+
+is applied to the top-ranked retrieved passage.
+
+Using an extractive reader keeps the current evaluation focused on the relationship between retrieval quality and answer extraction without introducing a separate generative LLM.
+
+---
+
+# Limitations
+
+* Poisoning strategies are heuristic constructions rather than optimized adversarial attacks.
+* The current poisoning experiments use a single default poisoning rate.
+* The current noise experiment uses a single noise level.
+* Statistical significance testing has not yet been performed for the aggregate poisoning results.
+* Recall@K, Precision@K, and MRR assume one relevant passage per query in this SQuAD-derived setup.
+* The reader receives only the top-1 retrieved passage rather than a multi-passage context.
+* The defense specifically targets embedding-level similarity and is not designed as a general-purpose poisoning defense.
+* Contradictory poisoning depends on successfully modifying the answer-bearing content; fallback cases should be monitored when reproducing the experiment.
+* Results are currently based on a SQuAD-derived corpus and require evaluation on additional datasets to assess generalization.
+* Reproducibility can be affected by numerical-library or hardware-level nondeterminism despite fixed random seeds.
+
+---
+
+# Future Work
+
+The next experimental steps are:
+
+### 1. Poisoning-rate sweep
+
+Evaluate:
+
+```text
+0% → 5% → 10% → 20% → 30%
+```
+
+to determine whether degradation follows a consistent dose-response relationship.
+
+### 2. Noise-level sweep
+
+Evaluate multiple query-noise levels and construct robustness curves rather than reporting a single perturbation strength.
+
+### 3. Statistical significance testing
+
+Use per-query predictions to perform paired statistical tests and determine whether observed poisoning effects are statistically significant.
+
+### 4. Defense analysis
+
+Investigate why the current suppression mechanism does not recover downstream answer quality and compare it with stronger reranking or filtering baselines.
+
+### 5. Additional datasets
+
+Evaluate the framework on datasets beyond SQuAD to determine whether the observed robustness patterns generalize.
+
+### 6. Stronger defense baselines
+
+Compare lightweight suppression against:
+
+* Cross-encoder reranking
+* Semantic clustering
+* Evidence consistency filtering
+* Other retrieval-time filtering strategies
+
+### 7. Generative RAG evaluation
+
+Extend the current extractive setup to a generative reader and evaluate answer faithfulness and correctness in addition to retrieval metrics.
+
+### 8. Multiple embedding models
+
+Repeat the experiments using different embedding models to determine whether robustness is dependent on the representation model.
+
+---
+
+# Research Status
+
+RobustRAG is currently an **experimental evaluation study**.
+
+The current results demonstrate a substantial sensitivity to query-side embedding noise, while the evaluated corpus-poisoning attacks produce comparatively modest degradation at the tested poisoning rate. The lightweight defense does not currently demonstrate performance recovery.
+
+Further experiments involving **attack-rate sweeps, statistical significance testing, stronger defense baselines, and cross-dataset evaluation** are required before drawing broader conclusions about RAG robustness.
+
+---
+
+## License
+
+See `LICENSE` for details.
