@@ -2,7 +2,9 @@
 
 An empirical study of corpus poisoning and query embedding noise in retrieval-augmented question answering.
 
-Preprint (Zenodo, DOI): [10.5281/zenodo.22153313](https://zenodo.org/records/22153313)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22153313.svg)](https://zenodo.org/records/22153313)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 Author: Maryam Zaheer, Department of Computer Science, UET Lahore
 
 ## What this is
